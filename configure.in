@@ -430,6 +430,17 @@ else
   AC_MSG_WARN([Can't find libSDL_sound, libSDL_sound support disabled])
 fi
 
+AH_TEMPLATE(C_VNC_SERVER,[Define to 1 to enable vncserver support])
+AC_CHECK_HEADER(rfb/rfb.h,have_rfb_h=yes,)
+AC_CHECK_LIB(vncserver, rfbGetScreen, have_rfb_get_screen=yes,,)
+AC_ARG_ENABLE(vncserver,AC_HELP_STRING([--disable-vncserver],[Disable vncserver support]),,enable_vncserver=yes)
+if test x$enable_vncserver = xyes; then
+  if test x$have_rfb_h = xyes -a x$have_rfb_get_screen = xyes ; then
+    LIBS="-lvncserver $LIBS"
+    AC_DEFINE(C_VNC_SERVER,1)
+  fi
+fi
+
 dnl Check for mprotect. Needed for 64 bits linux 
 AH_TEMPLATE(C_HAVE_MPROTECT,[Define to 1 if you have the mprotect function])
 AC_CHECK_HEADER([sys/mman.h], [

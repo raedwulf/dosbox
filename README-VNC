@@ -1,0 +1,12 @@
+VNC Server
+by Tai Chi Minh Ralph Eastwood
+
+This requires libvncserver to function.
+Initial version adds two configuration variables in the dosbox config;
+these are: 'vnc' and 'vncport'.
+The former enables the vnc server if true, whereas vncport starts listening on
+the specified port.
+
+TODO
+Add output interface for VNC, as well as input
+Sound via VNC extension?

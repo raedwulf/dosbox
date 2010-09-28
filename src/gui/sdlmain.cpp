@@ -132,6 +132,10 @@ struct private_hwdata {
 #include <os2.h>
 #endif
 
+#if C_VNC_SERVER
+#include <rfb/rfb.h>
+#endif
+
 enum SCREEN_TYPES	{
 	SCREEN_SURFACE,
 	SCREEN_SURFACE_DDRAW,
@@ -176,6 +180,15 @@ struct SDL_Block {
 		SCREEN_TYPES type;
 		SCREEN_TYPES want_type;
 	} desktop;
+#if C_VNC_SERVER
+	struct {
+		bool enabled;
+		int port;
+		rfbScreenInfoPtr server;
+		Bitu pitch;
+		Bit8u *pixels;
+	} vnc;
+#endif
 #if C_OPENGL
 	struct {
 		Bitu pitch;
@@ -656,6 +669,18 @@ dosurface:
 	if (retFlags)
 		GFX_Start();
 	if (!sdl.mouse.autoenable) SDL_ShowCursor(sdl.mouse.autolock?SDL_DISABLE:SDL_ENABLE);
+#if C_VNC_SERVER
+	if (sdl.vnc.enabled) {
+		Bit8u *oldfb, *newfb;
+		oldfb = (Bit8u*)sdl.vnc.server->frameBuffer;
+		newfb = (Bit8u*)calloc(width * height,sdl.surface->format->BitsPerPixel>>3);
+		rfbNewFramebuffer(sdl.vnc.server,(char*)newfb,width,height,8,3,sdl.surface->format->BitsPerPixel>>3);
+		sdl.vnc.server->serverFormat.redShift=16;
+		sdl.vnc.server->serverFormat.greenShift=8;
+		sdl.vnc.server->serverFormat.blueShift=0;
+		free((void *)oldfb);
+	}
+#endif
 	return retFlags;
 }
 
@@ -713,6 +738,10 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
 			pixels+=sdl.clip.x*sdl.surface->format->BytesPerPixel;
 			pitch=sdl.surface->pitch;
 		}
+#if C_VNC_SERVER
+		sdl.vnc.pixels = pixels;
+		sdl.vnc.pitch = pitch;
+#endif
 		sdl.updating=true;
 		return true;
 #if (HAVE_DDRAW_H) && defined(WIN32)
@@ -723,6 +752,10 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
 		}
 		pixels=(Bit8u *)sdl.blit.surface->pixels;
 		pitch=sdl.blit.surface->pitch;
+#if C_VNC_SERVER
+		sdl.vnc.pixels = pixels;
+		sdl.vnc.pitch = pitch;
+#endif
 		sdl.updating=true;
 		return true;
 #endif
@@ -730,12 +763,20 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
 		SDL_LockYUVOverlay(sdl.overlay);
 		pixels=(Bit8u *)*(sdl.overlay->pixels);
 		pitch=*(sdl.overlay->pitches);
+#if C_VNC_SERVER
+		sdl.vnc.pixels = pixels;
+		sdl.vnc.pitch = pitch;
+#endif
 		sdl.updating=true;
 		return true;
 #if C_OPENGL
 	case SCREEN_OPENGL:
 		pixels=(Bit8u *)sdl.opengl.framebuf;
 		pitch=sdl.opengl.pitch;
+#if C_VNC_SERVER
+		sdl.vnc.pixels = pixels;
+		sdl.vnc.pitch = pitch;
+#endif
 		sdl.updating=true;
 		return true;
 #endif
@@ -848,6 +889,26 @@ void GFX_EndUpdate( const Bit16u *changedLines ) {
 	default:
 		break;
 	}
+#if C_VNC_SERVER
+	if (!sdl.vnc.enabled || !changedLines)
+		return;
+		
+	Bitu y = 0, index = 0;
+	while (y < sdl.draw.height) {
+		if (!(index & 1)) {
+			y += changedLines[index];
+		} else {
+			Bit8u *pixels = (Bit8u *)sdl.vnc.pixels + y * sdl.vnc.pitch;
+			Bitu height = changedLines[index];
+			for (Bitu i = 0; i < height; i++)
+				memcpy(sdl.vnc.server->frameBuffer + (y + i) * sdl.vnc.server->width * 4, 
+				       pixels + i * sdl.vnc.pitch, sdl.draw.width * 4);
+			rfbMarkRectAsModified(sdl.vnc.server, 0, y, sdl.draw.width, y+height);
+			y += height;
+		}
+		index++;
+	}
+#endif
 }
 
 
@@ -1007,6 +1068,10 @@ static void GUI_StartUp(Section * sec) {
 #endif
 
 	sdl.desktop.fullscreen=section->Get_bool("fullscreen");
+#if C_VNC_SERVER
+	sdl.vnc.enabled=section->Get_bool("vnc");
+	sdl.vnc.port=section->Get_int("vncport");
+#endif
 	sdl.wait_on_error=section->Get_bool("waitonerror");
 
 	Prop_multival* p=section->Get_multival("priority");
@@ -1157,6 +1222,21 @@ static void GUI_StartUp(Section * sec) {
 	}
 	GFX_Stop();
 	SDL_WM_SetCaption("DOSBox",VERSION);
+
+#if C_VNC_SERVER
+	if (sdl.vnc.enabled) {
+		sdl.vnc.server = rfbGetScreen(0,0,640,400,8,3,sdl.desktop.bpp>>3);
+		sdl.vnc.server->frameBuffer=(char *)calloc(640*480,(sdl.desktop.bpp>>3));
+		sdl.vnc.server->desktopName="Dosbox VNC server";
+		sdl.vnc.server->alwaysShared=TRUE;
+		sdl.vnc.server->serverFormat.redShift=16;
+		sdl.vnc.server->serverFormat.greenShift=8;
+		sdl.vnc.server->serverFormat.blueShift=0;
+		sdl.vnc.server->port = sdl.vnc.port;
+		rfbInitServer(sdl.vnc.server);
+		rfbRunEventLoop(sdl.vnc.server,-1,TRUE);
+	}
+#endif
 
 /* The endian part is intentionally disabled as somehow it produces correct results without according to rhoenie*/
 //#if SDL_BYTEORDER == SDL_BIG_ENDIAN
@@ -1491,6 +1571,15 @@ void Config_Add_SDL() {
 	Pstring = sdl_sec->Add_string("output",Property::Changeable::Always,"surface");
 	Pstring->Set_help("What video system to use for output.");
 	Pstring->Set_values(outputs);
+
+#if C_VNC_SERVER
+	Pbool = sdl_sec->Add_bool("vnc",Property::Changeable::Always,false);
+	Pbool->Set_help("Enable output to as a vncserver.");
+	
+	Pint = sdl_sec->Add_int("vncport",Property::Changeable::Always,5915);
+	Pint->SetMinMax(0, 65535);
+	Pint->Set_help("Port to host the vncserver.");
+#endif
 
 	Pbool = sdl_sec->Add_bool("autolock",Property::Changeable::Always,true);
 	Pbool->Set_help("Mouse will automatically lock, if you click on the screen. (Press CTRL-F10 to unlock)");
@@ -1894,6 +1983,15 @@ int main(int argc, char* argv[]) {
 	//Force visible mouse to end user. Somehow this sometimes doesn't happen
 	SDL_WM_GrabInput(SDL_GRAB_OFF);
 	SDL_ShowCursor(SDL_ENABLE);
+
+#if C_VNC_SERVER
+	if (sdl.vnc.enabled) {
+		//Free framebuffer
+		free(sdl.vnc.server->frameBuffer);
+		//Close off the vnc server
+		rfbScreenCleanup(sdl.vnc.server);
+	}
+#endif
 
 	SDL_Quit();//Let's hope sdl will quit as well when it catches an exception
 	return 0;
